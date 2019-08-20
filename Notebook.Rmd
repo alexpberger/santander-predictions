@@ -1,0 +1,425 @@
+---
+title: "Santander Customer Transaction Prediction"
+author: "Alex Philip Berger"
+date: "8/19/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cars, include=FALSE}
+rm(list = ls())
+library(tidyverse)
+library(keras)
+source("functions.R")
+```
+
+<br>
+
+## Introduction
+
+In this notebook, I take on the **Santander Customer Transaction Prediction** Kaggle Competition (descibed in detail here: https://www.kaggle.com/c/santander-customer-transaction-prediction/overview). 
+
+In particular, I demonstrate a simple playbook of how to approach *any* machine learning problem - focusing on neural networks in this example. 
+
+I focus on the framework of solving a problem, and not on fine-tuning my model. Last, I upload my final model and participate in the competition.
+
+<br>
+
+## 1. Define problem and assemble the dataset
+
+**Problem Type** 
+
+The problem is of the type *binary classification*. 
+
+Context: The task is to predict the value of the 'target' variable in the test set. This variable represents if a customer makes a specific transaction in the future, at Santander Bank.
+
+**Assemble data set**
+
+Data is given in the link. After some manipulation of original files, I can import data as tibbles:
+
+```{r, echo=TRUE}
+test_data <- get_test_data("feather")
+train_data <- get_train_data("feather") 
+```
+
+Training data looks like this:
+
+```{r}
+head(train_data[,1:15])
+```
+
+I need to predict *target*, and I have var_0, var_1, ..., var_199 to do so.
+
+Test data is similar, but without any *target* values. This is the data on which I need to apply my model and upload answers to Kaggle. Thus, I only return to this data at the very end.
+
+<br>
+
+## 2. Choose the measure of success 
+
+The measure by which the kaggle competition is decided is *Area Under Receiver Operating Characteristic Curve* (ROC AUC). Another measure typically used together with *ROC AUC* is *Accuracy*, so I also pay attention to that.
+
+However, I note that I have a class-imbalanced problem:
+
+```{r}
+table(train_data$target)
+```
+
+Thus, precision and recall are also important measures, as per 'good practice'. I choose to focus on *ROC AUC* and *Accuracy* in despite of this.  
+
+<br>
+
+## 3. Decide the evaluation protocol
+
+I choose to maintain a *hold-out validation set* as my evalutaion protocol. This is the simplest approach.
+
+(Other options are *K-fold cross-validation* or *Iterated K-fold validation*).
+
+<br>
+
+## 4. Prepare data
+
+In this step, data needs to be formatted in a way that can be fed into a machine learning network. In this case, I assume a neural network, and transform data accordingly:
+
+**4.1) Format data as tensors**
+
+Comment: In this case the tensors will be of rank 2 (e.g., a "2D tensor""): Each single data-point can be encoded as a vector.
+
+```{r}
+format_as_tensor <- function(tibble){
+  tibble %>% 
+    select(contains("var_")) %>% 
+    as.matrix() %>% # 2D tensor, each single data-point can be encoded as a vector
+    unname()
+}
+x_train <- format_as_tensor(train_data)
+x_test <- format_as_tensor(test_data)
+y_train <- as.numeric(train_data$target) # labels should be numeric
+rm(test_data, train_data) # drop tibbles
+```
+
+**4.2) Normalize data**
+
+Comment: We generally want homogoenous data with small values as input to our neural network. While data isn't heterogenous, normalizing achieves both:
+
+```{r}
+mean <- apply(x_train, 2, mean) # Normalization value 1
+std <- apply(x_train, 2, sd) # Normalization value 2
+x_train <- scale(x_train, center = mean, scale = std)
+x_test <- scale(x_test, center = mean, scale = std)
+rm(mean, std)
+```
+
+**4.3) Inspect data**
+
+- Shape of training data (2D tensor = Matrix):
+
+```{r}
+dim(x_train)
+```
+
+- Each single data point is a numeric vector:
+
+```{r}
+x_test[1:10, 1:5]
+```
+
+- Labels are numeric:
+
+```{r}
+str(y_train) 
+```
+
+Conclusion: Data is ready for a neural network!
+
+<br>
+
+## 5. Develop a baseline model (1st working model)
+
+Purpose: Build a simple model to determine if we have *statistical power*, that is, can we beat a "dumb" baseline?
+
+To do so, I make the following design choices:
+
+- Last-layer activation: sigmoid (We need a mapping onto the [0, 1] interval, a probability)
+
+- Loss-function: Crossentropy (Common for binary classification problems - it is also a good proxy metric for ROC AUC)
+
+- Optimization configuration: rmsprop (A safe choice in most cases)
+
+<br>
+
+I can now implement a simple model (neural network) using the keras package:
+
+**5.1** I define the model:
+
+```{r}
+model <- keras_model_sequential() %>% 
+  layer_dense(units = 16, activation = "relu", input_shape = dim(x_train)[2]) %>% 
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+```
+
+Comment: We are looking at the most simple deep learning problem we can ever encounter: The input data are vectors (each obseration is a vector), and the labels are scalars. The above model (3 fully connected dense layers, 2 with relu activations, and 1 with a sigmoid activation to output probabilities) is generally known to perform well on this problem type.
+
+
+**5.2** I compile the model:
+
+```{r}
+model %>% compile(
+  optimizer = "rmsprop",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+```
+
+**5.3** I create validation data (by splitting *x_train* in two: one set for *training* and one set for *validating*)
+
+```{r}
+set.seed(04651)
+validation_prop <- 0.25 # I assign 25 % of the training data to *validation data*.
+n <- dim(x_train)[1]
+val_indices <- sample(n, n*(1-validation_prop)) # indices for validation data
+x_train_train <- x_train[val_indices,]
+x_train_validate <- x_train[-val_indices,]
+y_train_train <- y_train[val_indices]
+y_train_validate <- y_train[-val_indices] 
+```
+
+The tensors just defined, starting with "partial_" are now the central one in training and validating my solution.
+
+**5.4** I fit the model:
+```{r}
+history <- model %>% fit(
+  x_train_train,
+  y_train_train,
+  epocs = 20, # iterate 20 times through data
+  batch_size = 2^9, # update weights through feedback from 512 samples at a time
+  validation_data = list(x_train_validate, y_train_validate)
+)
+```
+
+**5.5** I validate the approach:
+
+- First, I plot the training and validation history:
+
+```{r}
+plot(history) 
+```
+
+I observe that loss decreases and accuracy increases with every epoch. The results are (as expected) better in training than in the validation data: We are *overfitting*. Further, the network makes no improvements (in the validation data) after 8th epoch (roughly).
+
+<br>
+
+Now, the important question: Does the network display **statistical power**?
+
+First, the accuracy rate in the validation data is ~ 91 %:
+
+```{r}
+metrics <- model %>% evaluate(x_train_validate, y_train_validate)
+metrics$acc
+```
+
+This can also be obtained through the history object, or through an explicit calculation:
+
+```{r}
+# Accuracy from 'history' object
+as.data.frame(history) %>% 
+  filter(data == "validation", metric == "acc", epoch == max(epoch))
+```
+
+```{r}
+# Accuracy through excplicit calculation
+predictions <- model %>% keras::predict_classes(x_train_validate) %>% as.vector()
+actuals <- y_train_validate
+sum(predictions == actuals) / length(predictions)
+```
+
+Second, how would a random guess perform? Context: The validation data has `r length(predictions)` observations. In the above, we predict `r sum(predictions)` positive labels (transactions). In fact, the validation data has `r format(sum(actuals), scientific = FALSE)` positive labels. I now construct two *random guesses* based on these numbers:
+
+```{r}
+random_binary_prediction <- function(n = 100, n_pos = 20){
+  random_prediction <- rep(0, n)
+  random_prediction[base::sample(x = n, size = n_pos)] <- 1 
+  return(random_prediction)
+}
+random_prediction_1 <- random_binary_prediction(n = length(actuals), n_pos = sum(actuals)) 
+random_prediction_2 <- random_binary_prediction(n = length(actuals), n_pos = sum(predictions)) 
+```
+
+The accuracy of the two random predictions:
+
+```{r}
+sum(random_prediction_1 == actuals) / length(actuals) 
+```
+
+```{r}
+sum(random_prediction_2 == actuals) / length(actuals) 
+```
+
+I conclude that the our simple neural network performs 5 % better than a random guess in absolute terms. Thus, there *is* statistical power.
+
+<br>
+
+To get a sense of the **measure of success**, ROC AUC, defined in section 2, I calculate the value, as well as the corresponding curve:
+
+```{r}
+rocr_pred_object <- ROCR::prediction(
+  model %>% keras::predict_proba(x_train_validate) %>% as.vector(), # prediction probabilities
+  y_train_validate # labels
+)
+ROC_AUC_metric(rocr_pred_object)
+```
+
+The value is the area under the following curve:
+
+```{r}
+ROC_AUC_plot(rocr_pred_object)
+```
+
+<br>
+
+Finally, I save the model.
+
+```{r}
+save_model_hdf5(model, "Model_01_Baseline.h5") 
+```
+
+And clean up the environment:
+
+```{r}
+keep <- c("x_test", "x_train", "x_train_train", "y_train_train", "x_train_validate", "y_train_validate")
+rm(list = setdiff(ls(), keep))
+source("functions.R") # reload functions
+```
+
+<br>
+
+## 6. Scaling up: Develop a model that overfits
+
+Motivation: We have statistical power, but there is still room for a more powerful model. In machine learning, the ideal model is found at on the border between under- and overfitting. 
+
+Since the model from #5 already displays overfitting, I skip this step. Normal operations would be to (1) add layers (2) make the layers bigger, and (3) train network for more epochs.
+
+<br>
+
+## 7. Modify and Tune model
+
+*This* is the main step, and a process where the model is repeatedly modified, trained, evaluated, to achieve the best possible model. The goal is to find a model that *generalize*, that is, does not overfit.
+
+We need to *regularize* the model from #5 (or, normally #6). The simplest way to do this is to reduce the size of the model, that is, reduce the number of layers, or the number of units per layer. In this way, the network can memorize fewer patterns, and will focus on the more important ones, that generalize better.
+
+Other approaches is to add weight regularization (add cost of having large weights in the network) *or* add dropout (zero'ing values from each layer output). I go with the former:
+
+```{r}
+model <- keras_model_sequential() %>% 
+  layer_dense(units = 16, activation = "relu", 
+              kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001), input_shape = dim(x_train)[2]) %>% 
+  layer_dense(units = 16, activation = "relu", 
+              kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001)) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+model %>% compile(
+  optimizer = "rmsprop",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+history <- model %>% fit(
+  x_train_train,
+  y_train_train,
+  epocs = 25, # iterate 25 times through data
+  batch_size = 2^8, 
+  validation_data = list(x_train_validate, y_train_validate)
+)
+```
+
+I then plot output:
+
+```{r}
+plot(history)
+```
+
+Now, the overfitting has disappeared: The model generalizes better. 
+
+Further, accuracy is *higher* than the previous model:
+
+```{r}
+metrics <- model %>% evaluate(x_train_validate, y_train_validate)
+metrics$acc
+```
+
+And so is ROC AUC:
+```{r}
+rocr_pred_object <- ROCR::prediction(
+  model %>% keras::predict_proba(x_train_validate) %>% as.vector(), # prediction probabilities
+  y_train_validate # labels
+)
+ROC_AUC_metric(rocr_pred_object)
+```
+
+More fine-tuning could be done to optimise model results. Some suggestions are already mentioned in the beginning of #7.
+
+Other suggestions:
+
+- Switch evaluation protocol, for example to *Iterated K-fold validation*. This would give more training data, and allow me to evaluate my model more precisely.
+
+- Other models could be tried, e.g., gradient boosting trees. Deep learning may not be necessary for this specific problem!
+
+However, to keep the example simple, I decide to finish here, and save the model.
+
+```{r}
+save_model_hdf5(model, "Model_02_Final.h5"); rm(model);
+```
+
+
+<br>
+
+## 8. The Kaggle Step: Upload results
+
+This step is included to show the *upload* step to participate in Kaggle competitions.
+
+First, the *test data* was already prepared in the above section. It looks like this:
+
+```{r}
+x_test[1:10, 1:5]
+```
+
+I then load and run the model:
+
+```{r}
+model <- load_model_hdf5("Model_02_Final.h5")
+results <- model %>% predict_classes(x_test)
+```
+
+The results are now in a binary vector:
+
+```{r}
+results[1:10]
+```
+
+The distribution is as follows:
+```{r}
+table(results)
+```
+
+I now reload the original tibble of test_data. And combine it with the results just optained.
+
+```{r}
+test_data <- get_test_data("feather")
+
+to_csv <- tibble(
+  ID_Code = test_data$ID_code,
+  target = results
+)
+```
+
+I can now export to csv and upload to: https://www.kaggle.com/c/santander-customer-transaction-prediction/submit.
+
+```{r}
+readr::write_csv(to_csv, path = "sample_submission.csv")
+```
+
+Another option is to submit via the command line: kaggle competitions submit -c santander-customer-transaction-prediction -f submission.csv -m "Message"
+
