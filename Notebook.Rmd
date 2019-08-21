@@ -10,13 +10,6 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r cars, include=FALSE}
-rm(list = ls())
-library(tidyverse)
-library(keras)
-source("functions.R")
-```
-
 <br>
 
 ## Introduction
@@ -38,6 +31,14 @@ The problem is of the type *binary classification*.
 Context: The task is to predict the value of the 'target' variable in the test set. This variable represents if a customer makes a specific transaction in the future, at Santander Bank.
 
 **Assemble data set**
+
+To assemble data, I power up *R* and load libraries and support functions (*functions.R*):
+
+```{r, echo=TRUE, results='hide', message=F, warning=F}
+library(tidyverse)
+library(keras)
+source("functions.R")
+```
 
 Data is given in the link. After some manipulation of original files, I can import data as tibbles:
 
@@ -267,7 +268,7 @@ To get a sense of the **measure of success**, ROC AUC, defined in section 2, I c
 
 ```{r}
 rocr_pred_object <- ROCR::prediction(
-  model %>% keras::predict_proba(x_train_validate) %>% as.vector(), # prediction probabilities
+  model %>% keras::predict_proba(x_train_validate) %>% as.vector(), # prediction prob
   y_train_validate # labels
 )
 ROC_AUC_metric(rocr_pred_object)
@@ -290,7 +291,8 @@ save_model_hdf5(model, "Model_01_Baseline.h5")
 And clean up the environment:
 
 ```{r}
-keep <- c("x_test", "x_train", "x_train_train", "y_train_train", "x_train_validate", "y_train_validate")
+keep <- c("x_test", "x_train", "x_train_train", "y_train_train", 
+          "x_train_validate", "y_train_validate")
 rm(list = setdiff(ls(), keep))
 source("functions.R") # reload functions
 ```
@@ -316,7 +318,8 @@ Other approaches is to add weight regularization (add cost of having large weigh
 ```{r}
 model <- keras_model_sequential() %>% 
   layer_dense(units = 16, activation = "relu", 
-              kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001), input_shape = dim(x_train)[2]) %>% 
+              kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001), 
+              input_shape = dim(x_train)[2]) %>% 
   layer_dense(units = 16, activation = "relu", 
               kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001)) %>%
   layer_dense(units = 1, activation = "sigmoid")
@@ -354,7 +357,7 @@ metrics$acc
 And so is ROC AUC:
 ```{r}
 rocr_pred_object <- ROCR::prediction(
-  model %>% keras::predict_proba(x_train_validate) %>% as.vector(), # prediction probabilities
+  model %>% keras::predict_proba(x_train_validate) %>% as.vector(), # prediction probs
   y_train_validate # labels
 )
 ROC_AUC_metric(rocr_pred_object)
@@ -374,14 +377,15 @@ However, to keep the example simple, I decide to finish here, and save the model
 save_model_hdf5(model, "Model_02_Final.h5"); rm(model);
 ```
 
+And that's it: The 7 steps just demonstrated are natural parts of all machine learning problems. 
+
+The final step demonstrates the *upload* step to participate in Kaggle competitions.
 
 <br>
 
 ## 8. The Kaggle Step: Upload results
 
-This step is included to show the *upload* step to participate in Kaggle competitions.
-
-First, the *test data* was already prepared in the above section. It looks like this:
+First, the chosen model must be applied to the *test data*. This was already prepared in the above steps, and looks like this:
 
 ```{r}
 x_test[1:10, 1:5]
@@ -416,11 +420,12 @@ to_csv <- tibble(
 )
 ```
 
-I can now export to csv and upload to: https://www.kaggle.com/c/santander-customer-transaction-prediction/submit.
+I can now export to csv: 
 
 ```{r}
 readr::write_csv(to_csv, path = "sample_submission.csv")
 ```
 
-Another option is to submit via the command line: kaggle competitions submit -c santander-customer-transaction-prediction -f submission.csv -m "Message"
+And, finally, upload to: https://www.kaggle.com/c/santander-customer-transaction-prediction/submit.
 
+Another option is to submit via the command line: kaggle competitions submit -c santander-customer-transaction-prediction -f submission.csv -m "Message"
