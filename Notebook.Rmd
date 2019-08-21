@@ -2,7 +2,8 @@
 title: "Santander Customer Transaction Prediction"
 author: "Alex Philip Berger"
 date: "8/19/2019"
-output: html_document
+output:
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
